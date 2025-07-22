@@ -1,95 +1,89 @@
 import os
 import requests
-import json
 
-# 🔑 Environment Variables from Render Dashboard
+# 🌍 Odoo credentials from environment variables
 odoo_url = os.environ["ODOO_URL"]
 odoo_db = os.environ["ODOO_DB"]
 odoo_user = os.environ["ODOO_USER"]
 odoo_pass = os.environ["ODOO_PASS"]
 
-# 🌐 Mockaroo API details
-mockaroo_url = "https://my.api.mockaroo.com/mock_ap3.json"
-mockaroo_headers = {"X-API-Key": "1239ff60"}
-
-print("📡 Fetching data from Mockaroo...")
+# 🔗 Mockaroo endpoint
+mockaroo_url = "https://my.api.mockaroo.com/mock_ap4.json"
+headers = {"X-API-Key": "1239ff60"}
 
 try:
-    response = requests.get(mockaroo_url, headers=mockaroo_headers)
+    print("📡 Fetching data from Mockaroo...")
+    response = requests.get(mockaroo_url, headers=headers)
     response.raise_for_status()
-    mock_data = response.json()
-except json.JSONDecodeError as e:
-    print("❌ Error decoding JSON:", e)
-    print("🔎 Response content:", response.text)
-    exit()
-except Exception as e:
-    print("❌ Error fetching data:", e)
-    exit()
+    data = response.json()
 
-# 🧮 Sum "Balance Due" from all records
-total_balance_due = 0.0
-for entry in mock_data:
-    try:
-        balance = float(entry.get("Balance Due", 0))
-        total_balance_due += balance
-    except (ValueError, TypeError):
-        continue
+    # 🧮 Sum 'Balance Due'
+    total_due = 0.0
+    for record in data:
+        try:
+            amount = float(record.get("Balance Due", 0))
+            total_due += amount
+        except (ValueError, TypeError):
+            pass
 
-print(f"✅ Total Balance Due: {total_balance_due}")
+    print(f"💰 Total Balance Due: {total_due}")
 
-# 🔐 Authenticate with Odoo
-print("🔐 Authenticating with Odoo...")
-auth_payload = {
-    "jsonrpc": "2.0",
-    "method": "call",
-    "params": {
-        "db": odoo_db,
-        "login": odoo_user,
-        "password": odoo_pass
-    },
-    "id": 1
-}
-
-auth_response = requests.post(f"{odoo_url}/web/session/authenticate", json=auth_payload)
-if auth_response.status_code != 200 or "result" not in auth_response.json():
-    print("❌ Failed to authenticate with Odoo:", auth_response.text)
-    exit()
-
-session = requests.Session()
-session.cookies.update(auth_response.cookies)
-
-# ✏️ Update the value in Odoo custom model
-print("📤 Pushing total to Odoo...")
-update_payload = {
-    "jsonrpc": "2.0",
-    "method": "call",
-    "params": {
-        "model": "x_ap_dashboard",
-        "method": "search",
-        "args": [[["id", "!=", 0]]],
-        "kwargs": {}
-    },
-    "id": 2
-}
-search_response = session.post(f"{odoo_url}/web/dataset/call_kw", json=update_payload)
-ids = search_response.json().get("result", [])
-
-if ids:
-    update_value_payload = {
+    # 🔐 Authenticate with Odoo
+    print("🔑 Logging into Odoo...")
+    login_payload = {
         "jsonrpc": "2.0",
         "method": "call",
         "params": {
-            "model": "x_ap_dashboard",
-            "method": "write",
-            "args": [ids, {"x_studio_float_field_44o_1j0pl01m9": total_balance_due}],
+            "db": odoo_db,
+            "login": odoo_user,
+            "password": odoo_pass
+        },
+        "id": 1
+    }
+    login_response = requests.post(f"{odoo_url}/web/session/authenticate", json=login_payload)
+    uid = login_response.json()["result"]["uid"]
+    print(f"✅ Logged in as user ID: {uid}")
+
+    # 📤 Update Odoo model field
+    print("📦 Updating Odoo custom field...")
+    model = "x_ap_dashboard"  # Your custom model's technical name
+    field_name = "x_studio_float_field_44o_1j0pl01m9"  # Your custom field technical name
+
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "model": model,
+            "method": "search",
+            "args": [[]],  # Find all records
             "kwargs": {}
         },
-        "id": 3
+        "id": 2
     }
-    write_response = session.post(f"{odoo_url}/web/dataset/call_kw", json=update_value_payload)
-    if write_response.status_code == 200:
-        print("🎉 Successfully updated AP total in Odoo!")
+    search_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=payload, cookies=login_response.cookies)
+    ids = search_response.json()["result"]
+    
+    if not ids:
+        print("⚠️ No records found to update.")
     else:
-        print("❌ Failed to update AP total:", write_response.text)
-else:
-    print("⚠️ No AP Dashboard records found to update.")
+        record_id = ids[0]
+        update_payload = {
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": {
+                "model": model,
+                "method": "write",
+                "args": [[record_id], {field_name: total_due}],
+                "kwargs": {}
+            },
+            "id": 3
+        }
+        update_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=update_payload, cookies=login_response.cookies)
+        print("✅ Odoo updated successfully!")
+
+except requests.exceptions.RequestException as e:
+    print(f"❌ Error fetching data: {e}")
+except ValueError as e:
+    print(f"❌ Error decoding JSON: {e}")
+except Exception as e:
+    print(f"❌ General error: {e}")
