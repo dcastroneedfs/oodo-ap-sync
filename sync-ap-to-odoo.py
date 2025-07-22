@@ -4,8 +4,12 @@ import xmlrpc.client
 # === ODOO CONFIGURATION ===
 odoo_url = "https://needfstrial.odoo.com"
 db = "needfstrial"
-username = "dcastro@needfs.com"           # ← replace with your Odoo login email
-password = "admin12345678#"        # ← replace with your Odoo password or API token
+
+import os
+
+username = os.getenv("ODOO_USER")
+password = os.getenv("ODOO_PASS")
+
 
 # === ODOO CUSTOM MODEL DETAILS ===
 model_name = "x_ap_dashboard"     # ← replace if your model name is different
