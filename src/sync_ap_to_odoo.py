@@ -1,97 +1,72 @@
-import requests
-import json
-import re
 import os
-import time
+import psycopg2
+import requests
 
-# 🌐 Environment variables from Render
-odoo_url = os.environ['ODOO_URL']
-odoo_user = os.environ['ODOO_USER']
-odoo_pass = os.environ['ODOO_PASS']
-odoo_db   = os.environ['ODOO_DB']
+# Load from environment
+ODOO_URL = os.environ['ODOO_URL']
+ODOO_USERNAME = os.environ['ODOO_USERNAME']
+ODOO_PASSWORD = os.environ['ODOO_PASSWORD']
+DATABASE_URL = os.environ['DATABASE_URL']
 
-# 📡 Step 1: Fetch data from Mockaroo
-headers = {
-    "X-API-Key": "1239ff60"
-}
-mockaroo_url = "https://my.api.mockaroo.com/mock_ap4.json"
+# Hardcoded Odoo field name
+ODOO_FIELD = 'x_studio_total_ap'
 
-print("📡 Fetching data from Mockaroo...")
-try:
-    response = requests.get(mockaroo_url, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-except json.JSONDecodeError as e:
-    print(f"❌ Error decoding JSON: {e}")
-    print(f"🔎 Response content: {response.text}")
-    exit()
-except requests.RequestException as e:
-    print(f"❌ Error fetching data: {e}")
-    exit()
-
-# 🧮 Step 2: Sum 'Invoice Amount' across all records
-total_invoice = 0.0
-for idx, record in enumerate(data):
-    raw = record.get("Invoice Amount", "")
+def fetch_total_invoice_amount():
     try:
-        # Strip currency symbols and commas
-        cleaned = re.sub(r"[^\d.]", "", str(raw))
-        amount = float(cleaned) if cleaned else 0.0
-        print(f"🧾 Row {idx + 1}: Parsed Invoice Amount = {amount}")
-        total_invoice += amount
-    except (ValueError, TypeError):
-        print(f"⚠️ Row {idx + 1}: Could not parse amount: {raw}")
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT SUM(invoice_amount) FROM invoices;")
+        total = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return total if total else 0.0
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+        return 0.0
 
-print(f"💰 Total Invoice Amount (All Vendors): {total_invoice}")
+def update_odoo_field(total_amount):
+    # Step 1: Authenticate
+    auth_response = requests.post(f'{ODOO_URL}/web/session/authenticate', json={
+        "jsonrpc": "2.0",
+        "params": {
+            "db": "dummy",  # Required by Odoo even if ignored on SaaS
+            "login": ODOO_USERNAME,
+            "password": ODOO_PASSWORD
+        }
+    })
 
-# 🔑 Step 3: Log in to Odoo
-print("🔑 Logging into Odoo...")
-login_url = f"{odoo_url}/web/session/authenticate"
-payload = {
-    "jsonrpc": "2.0",
-    "params": {
-        "db": odoo_db,
-        "login": odoo_user,
-        "password": odoo_pass
+    if auth_response.status_code != 200 or 'result' not in auth_response.json():
+        print("❌ Failed to authenticate with Odoo.")
+        return
+
+    uid = auth_response.json()['result']['uid']
+    session_id = auth_response.cookies['session_id']
+
+    # Step 2: Update Odoo record
+    headers = {
+        'Content-Type': 'application/json',
+        'Cookie': f'session_id={session_id}'
     }
-}
 
-try:
-    session = requests.Session()
-    login_res = session.post(login_url, json=payload)
-    login_res.raise_for_status()
-    user_id = login_res.json()["result"]["uid"]
-    print(f"✅ Logged in as user ID: {user_id}")
-except Exception as e:
-    print(f"❌ Login failed: {e}")
-    exit()
+    update_response = requests.post(f'{ODOO_URL}/web/dataset/call_kw/ap.dash/write', json={
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "model": "ap.dash",
+            "method": "write",
+            "args": [[1], {ODOO_FIELD: total_amount}],
+            "kwargs": {}
+        }
+    }, headers=headers)
 
-# 🧾 Step 4: Update custom field in Odoo
-print("📦 Updating Odoo custom field...")
+    if update_response.status_code == 200:
+        print(f"✅ Pushed ${total_amount:,.2f} to Odoo field '{ODOO_FIELD}'")
+    else:
+        print(f"❌ Failed to update Odoo: {update_response.text}")
 
-update_url = f"{odoo_url}/web/dataset/call_kw"
-headers.update({"Content-Type": "application/json"})
-
-# Replace with your actual model and field name
-model_name = "x_ap_dashboard"  # custom model from Studio
-field_name = "x_studio_float_field_44o_1j0pl01m9"  # technical field name
-record_id = 1  # usually ID of the record you're updating (adjust as needed)
-
-payload = {
-    "jsonrpc": "2.0",
-    "method": "call",
-    "params": {
-        "model": model_name,
-        "method": "write",
-        "args": [[record_id], {field_name: total_invoice}],
-        "kwargs": {},
-    },
-    "id": 1,
-}
-
-try:
-    update_res = session.post(update_url, headers=headers, json=payload)
-    update_res.raise_for_status()
-    print("✅ Odoo updated successfully!")
-except Exception as e:
-    print(f"❌ Error updating Odoo: {e}")
+if __name__ == "__main__":
+    print("📡 Fetching total invoice amount from Neon DB...")
+    total = fetch_total_invoice_amount()
+    print(f"💰 Total Invoice Amount: ${total:,.2f}")
+    print("🔐 Updating Odoo...")
+    update_odoo_field(total)
