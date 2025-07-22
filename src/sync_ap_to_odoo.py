@@ -1,64 +1,58 @@
 import requests
-import xmlrpc.client
-
-# === ODOO CONFIGURATION ===
-odoo_url = "https://needfstrial.odoo.com"
-db = "needfstrial"
-
 import os
 
-username = os.getenv("ODOO_USER")
-password = os.getenv("ODOO_PASS")
+def fetch_ap_total():
+    try:
+        url = "https://my.api.mockaroo.com/mock_ap?key=1239ff60"
+        response = requests.get(url, headers={"Accept": "application/json"})
+        response.raise_for_status()
+        data = response.json()
 
+        if isinstance(data, list) and data:
+            total_ap = sum(item.get("amount", 0) for item in data)
+            print(f"✅ Total AP: {total_ap}")
+            return total_ap
+        else:
+            print("❌ Unexpected data format from Mockaroo:", data)
+            return None
+    except Exception as e:
+        print("❌ Error fetching data:", e)
+        return None
 
-# === ODOO CUSTOM MODEL DETAILS ===
-model_name = "x_ap_dashboard"     # ← replace if your model name is different
-target_field = "x_studio_float_field_44o_1j0pl01m9"  # ← field to update with AP total
+def update_odoo_ap_total(ap_total):
+    try:
+        import xmlrpc.client
 
-# === MOCKAROO CONFIGURATION ===
-mockaroo_url = "https://my.api.mockaroo.com/mock_ap.json?key=1239ff60"
+        url = os.environ["ODOO_URL"]
+        db = os.environ["ODOO_DB"]
+        username = os.environ["ODOO_USERNAME"]
+        password = os.environ["ODOO_PASSWORD"]
+        field = os.environ["ODOO_FIELD"]
 
-# === STEP 1: FETCH AP TOTAL FROM MOCKAROO ===
-try:
-    response = requests.get(mockaroo_url)
-    response.raise_for_status()
-    data = response.json()
+        common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+        uid = common.authenticate(db, username, password, {})
 
-    # Assuming Mockaroo returns a list of dicts with 'ap_total'
-    ap_total = data[0].get("ap_total", 0)
-    print("✅ Fetched AP total from Mockaroo:", ap_total)
+        if not uid:
+            print("❌ Failed to authenticate with Odoo")
+            return
 
-except Exception as e:
-    print("❌ Error fetching data from Mockaroo:", e)
-    exit(1)
+        models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 
-# === STEP 2: AUTHENTICATE WITH ODOO ===
-try:
-    common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common")
-    uid = common.authenticate(db, username, password, {})
-    if not uid:
-        raise Exception("Invalid Odoo credentials")
+        ids = models.execute_kw(db, uid, password,
+            'x_ap_dashboard', 'search', [[]], {'limit': 1})
 
-    print("🔑 Authenticated with Odoo")
+        if ids:
+            models.execute_kw(db, uid, password,
+                'x_ap_dashboard', 'write',
+                [ids, {field: ap_total}]
+            )
+            print("✅ Odoo updated successfully.")
+        else:
+            print("❌ No record found to update.")
+    except Exception as e:
+        print("❌ Error updating Odoo:", e)
 
-except Exception as e:
-    print("❌ Failed to authenticate with Odoo:", e)
-    exit(1)
-
-# === STEP 3: PUSH DATA INTO ODOO ===
-try:
-    models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
-
-    # Find the first record in your custom model
-    ids = models.execute_kw(db, uid, password, model_name, 'search', [[]], {'limit': 1})
-    
-    if not ids:
-        print("⚠️ No records found in the model to update.")
-        exit(0)
-
-    # Update the record with new AP total
-    models.execute_kw(db, uid, password, model_name, 'write', [ids, {target_field: ap_total}])
-    print("✅ Successfully updated Odoo with new AP total:", ap_total)
-
-except Exception as e:
-    print("❌ Error updating Odoo:", e)
+if __name__ == "__main__":
+    total = fetch_ap_total()
+    if total is not None:
+        update_odoo_ap_total(total)
