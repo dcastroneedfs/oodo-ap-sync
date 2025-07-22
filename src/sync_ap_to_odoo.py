@@ -3,7 +3,7 @@ import psycopg2
 import requests
 from decimal import Decimal
 
-# Load env variables
+# Load environment variables
 odoo_url = os.environ["ODOO_URL"]
 odoo_user = os.environ["ODOO_USER"]
 odoo_pass = os.environ["ODOO_PASS"]
@@ -26,6 +26,7 @@ except Exception as e:
 print("🔐 Logging into Odoo...")
 
 try:
+    # Authenticate to get the user ID
     login_payload = {
         "jsonrpc": "2.0",
         "method": "call",
@@ -39,60 +40,68 @@ try:
 
     login_response = requests.post(f"{odoo_url}/web/session/authenticate", json=login_payload)
     login_json = login_response.json()
-
-    if "result" not in login_json or "session_id" not in login_json["result"]:
-        print(f"❌ Error updating Odoo: 'session_id' not found in login response")
-        exit()
-
+    
     uid = login_json["result"]["uid"]
-    session_id = login_json["result"]["session_id"]
-    headers = {"Cookie": f"session_id={session_id}"}
+    if not uid:
+        print("❌ Failed to log in to Odoo (UID not found).")
+        exit()
 
     print("✅ Logged into Odoo, updating field...")
 
-    # Search for records in x_ap_dashboard
+    # Search for record(s) in your custom model
     search_payload = {
         "jsonrpc": "2.0",
         "method": "call",
         "params": {
-            "model": "x_ap_dashboard",
-            "method": "search",
-            "args": [[]],
-            "kwargs": {}
+            "service": "object",
+            "method": "execute_kw",
+            "args": [
+                odoo_db,
+                uid,
+                odoo_pass,
+                "x_ap_dashboard",
+                "search",
+                [[]]  # match all records
+            ]
         },
         "id": 2
     }
 
-    search_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=search_payload, headers=headers).json()
-    record_ids = search_response.get("result", [])
+    search_response = requests.post(f"{odoo_url}/jsonrpc", json=search_payload)
+    record_ids = search_response.json().get("result", [])
 
     if not record_ids:
-        print("⚠️ No records found to update.")
+        print("⚠️ No records found in x_ap_dashboard.")
         exit()
 
-    # Convert Decimal to float explicitly
+    # Convert to float for serialization
     float_amount = float(total_amount)
 
-    # Update the custom float field
+    # Update the field
     update_payload = {
         "jsonrpc": "2.0",
         "method": "call",
         "params": {
-            "model": "x_ap_dashboard",
-            "method": "write",
-            "args": [record_ids, {
-                "x_studio_float_field_44o_1j0pl01m9": float_amount
-            }],
-            "kwargs": {}
+            "service": "object",
+            "method": "execute_kw",
+            "args": [
+                odoo_db,
+                uid,
+                odoo_pass,
+                "x_ap_dashboard",
+                "write",
+                [record_ids, {
+                    "x_studio_float_field_44o_1j0pl01m9": float_amount
+                }]
+            ]
         },
         "id": 3
     }
 
-    update_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=update_payload, headers=headers).json()
-
-    if update_response.get("result", False):
+    update_response = requests.post(f"{odoo_url}/jsonrpc", json=update_payload)
+    if update_response.json().get("result", False):
         print("✅ Odoo field updated successfully!")
     else:
-        print(f"❌ Failed to update Odoo: {update_response}")
+        print(f"❌ Failed to update Odoo: {update_response.json()}")
 except Exception as e:
     print(f"❌ Error updating Odoo: {e}")
