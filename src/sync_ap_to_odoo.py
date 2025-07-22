@@ -3,104 +3,85 @@ import psycopg2
 import requests
 
 # Load environment variables
-DATABASE_URL = os.environ['DATABASE_URL']
-ODOO_URL = os.environ['ODOO_URL']
-ODOO_USER = os.environ['ODOO_USER']
-ODOO_PASS = os.environ['ODOO_PASS']
-ODOO_DB = os.environ['ODOO_DB']
-ODOO_CUSTOM_FIELD = "x_studio_balance_due_total"
+odoo_url = os.environ['ODOO_URL']
+odoo_user = os.environ['ODOO_USER']
+odoo_pass = os.environ['ODOO_PASS']
+odoo_db = os.environ['ODOO_DB']
+database_url = os.environ['DATABASE_URL']
 
-def get_total_invoice_amount():
-    try:
-        print("📡 Fetching total invoice amount from Neon DB...")
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT SUM(invoice_amount) FROM invoices;")
-        result = cur.fetchone()
-        total = result[0] or 0
-        cur.close()
-        conn.close()
-        print(f"💰 Total Invoice Amount: ${total:,.2f}")
-        return total
-    except Exception as e:
-        print(f"❌ Error fetching data: {e}")
-        return 0
+print("📡 Fetching total invoice amount from Neon DB...")
 
-def update_odoo(total_amount):
-    try:
-        print("🔐 Logging into Odoo...")
-        auth_response = requests.post(f"{ODOO_URL}/web/session/authenticate", json={
-            "params": {
-                "db": ODOO_DB,
-                "login": ODOO_USER,
-                "password": ODOO_PASS
-            }
-        })
+# Connect to PostgreSQL and sum invoice_amount
+try:
+    conn = psycopg2.connect(database_url)
+    cur = conn.cursor()
+    cur.execute("SELECT SUM(invoice_amount) FROM invoices;")
+    total_amount = cur.fetchone()[0] or 0.0
+    cur.close()
+    conn.close()
+    print(f"💰 Total Invoice Amount: ${total_amount:,.2f}")
+except Exception as e:
+    print(f"❌ Error fetching from Neon DB: {e}")
+    total_amount = 0.0
 
-        auth_response.raise_for_status()
-        session_id = auth_response.cookies.get("session_id")
+# Log into Odoo
+print("🔐 Logging into Odoo...")
+login_payload = {
+    "jsonrpc": "2.0",
+    "method": "call",
+    "params": {
+        "db": odoo_db,
+        "login": odoo_user,
+        "password": odoo_pass
+    },
+    "id": 1
+}
 
-        if not session_id:
-            print("❌ Failed to authenticate with Odoo.")
-            return
+try:
+    login_response = requests.post(f"{odoo_url}/web/session/authenticate", json=login_payload)
+    uid = login_response.json()["result"]["uid"]
+    print("✅ Logged into Odoo, updating field...")
 
-        print("✅ Logged into Odoo, updating field...")
-        headers = {
-            "Content-Type": "application/json",
-            "Cookie": f"session_id={session_id}"
-        }
+    # Update custom field
+    headers = {
+        "Content-Type": "application/json",
+        "X-Openerp-Session-Id": login_response.cookies.get("session_id")
+    }
 
-        # Find all records in x_ap_dash to update
-        search_payload = {
-            "jsonrpc": "2.0",
-            "method": "call",
-            "params": {
-                "model": "x_ap_dash",
-                "method": "search",
-                "args": [[["id", "!=", 0]]],
-                "kwargs": {},
-            },
-            "id": 1,
-        }
+    # Search for record in the custom model
+    search_payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "model": "x_ap_dashboard",
+            "method": "search",
+            "args": [[]],
+            "kwargs": {}
+        },
+        "id": 2
+    }
 
-        search_response = requests.post(f"{ODOO_URL}/web/dataset/call_kw", json=search_payload, headers=headers)
-        search_json = search_response.json()
-        print("🔎 Search response:", search_json)
+    search_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=search_payload, headers=headers, cookies=login_response.cookies)
+    record_ids = search_response.json()["result"]
 
-        if "error" in search_json:
-            print("❌ Error in search response:", search_json["error"])
-            return
-
-        record_ids = search_json.get("result", [])
-        if not record_ids:
-            print("❌ No records found to update.")
-            return
-
-        # Update the custom field
+    if record_ids:
         update_payload = {
             "jsonrpc": "2.0",
             "method": "call",
             "params": {
-                "model": "x_ap_dash",
+                "model": "x_ap_dashboard",
                 "method": "write",
-                "args": [record_ids, {ODOO_CUSTOM_FIELD: total_amount}],
-                "kwargs": {},
+                "args": [record_ids, {
+                    "x_studio_float_field_44o_1j0pl01m9": total_amount
+                }],
+                "kwargs": {}
             },
-            "id": 2,
+            "id": 3
         }
 
-        update_response = requests.post(f"{ODOO_URL}/web/dataset/call_kw", json=update_payload, headers=headers)
-        update_json = update_response.json()
-        print("🛠 Update response:", update_json)
-
-        if "error" in update_json:
-            print("❌ Error in update response:", update_json["error"])
-        else:
-            print("✅ Odoo field updated successfully!")
-
-    except Exception as e:
-        print(f"❌ Exception: {e}")
-
-if __name__ == "__main__":
-    total = get_total_invoice_amount()
-    update_odoo(total)
+        update_response = requests.post(f"{odoo_url}/web/dataset/call_kw", json=update_payload, headers=headers, cookies=login_response.cookies)
+        print("✅ Odoo field updated successfully!")
+    else:
+        print("⚠️ No records found in model x_ap_dashboard.")
+except Exception as e:
+    print(f"❌ Failed to update Odoo: {e}")
