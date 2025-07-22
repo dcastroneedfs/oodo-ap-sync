@@ -17,16 +17,16 @@ try:
     response.raise_for_status()
     data = response.json()
 
-    # 🧮 Sum 'Balance Due'
-    total_due = 0.0
+    # 🧮 Sum 'Invoice Amount'
+    total_invoice = 0.0
     for record in data:
         try:
-            amount = float(record.get("Balance Due", 0))
-            total_due += amount
+            amount = float(record.get("Invoice Amount", 0))
+            total_invoice += amount
         except (ValueError, TypeError):
             pass
 
-    print(f"💰 Total Balance Due: {total_due}")
+    print(f"🧾 Total Invoice Amount: {total_invoice}")
 
     # 🔐 Authenticate with Odoo
     print("🔑 Logging into Odoo...")
@@ -73,7 +73,7 @@ try:
             "params": {
                 "model": model,
                 "method": "write",
-                "args": [[record_id], {field_name: total_due}],
+                "args": [[record_id], {field_name: total_invoice}],
                 "kwargs": {}
             },
             "id": 3
