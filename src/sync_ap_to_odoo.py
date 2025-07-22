@@ -1,53 +1,63 @@
-import os
 import requests
-import xmlrpc.client
+import json
+import os
 
-# Load environment variables
+# 🌐 Load environment variables
 odoo_url = os.environ['ODOO_URL']
-odoo_db = os.environ['ODOO_DB']
 odoo_user = os.environ['ODOO_USER']
 odoo_pass = os.environ['ODOO_PASS']
+odoo_db   = os.environ['ODOO_DB']
 
-# Authenticate with Odoo
-common = xmlrpc.client.ServerProxy(f'{odoo_url}/xmlrpc/2/common')
-uid = common.authenticate(odoo_db, odoo_user, odoo_pass, {})
-models = xmlrpc.client.ServerProxy(f'{odoo_url}/xmlrpc/2/object')
+# 🔐 Login to Odoo
+login_url = f"{odoo_url}/web/session/authenticate"
+login_payload = {
+    "params": {
+        "db": odoo_db,
+        "login": odoo_user,
+        "password": odoo_pass
+    }
+}
+login_response = requests.post(login_url, json=login_payload)
+login_response.raise_for_status()
+session_id = login_response.cookies.get("session_id")
+headers = {
+    "Content-Type": "application/json",
+    "Cookie": f"session_id={session_id}"
+}
 
-# Fetch data from Mockaroo
+# 📥 Fetch data from Mockaroo
+mockaroo_url = "https://my.api.mockaroo.com/mock_ap.json"
+mockaroo_headers = {
+    "X-API-Key": "1239ff60",
+    "Accept": "application/json"
+}
+mockaroo_response = requests.get(mockaroo_url, headers=mockaroo_headers)
+mockaroo_response.raise_for_status()
+
 try:
-    mockaroo_url = "https://my.api.mockaroo.com/mock_ap.json?key=1239ff60"
-    headers = { "X-API-Key": "1239ff60" }
-    response = requests.get(mockaroo_url, headers=headers)
-    response.raise_for_status()
-    mock_data = response.json()
+    data = mockaroo_response.json()
 except Exception as e:
-    print(f"❌ Error fetching data: {e}")
-    exit()
+    print("❌ Error decoding JSON:", e)
+    print("🔎 Response content:", mockaroo_response.text)
+    exit(1)
 
-# Sum the 'balance_due' values
-try:
-    total_ap = sum(float(item.get('balance_due', 0)) for item in mock_data)
-    print(f"🔢 Total AP: {total_ap}")
-except Exception as e:
-    print(f"❌ Error processing data: {e}")
-    exit()
+# ➕ Sum the balance_due field
+total_balance_due = sum(item.get("balance_due", 0) for item in data if isinstance(item.get("balance_due", 0), (int, float)))
 
-# Update Odoo model field
-try:
-    # Replace with your actual model name and field technical name
-    model_name = 'x_ap_dashboard'
-    field_name = 'x_studio_float_field_44o_1j0pl01m9'
+# 🧾 Update Odoo field
+write_url = f"{odoo_url}/web/dataset/call_kw"
+write_payload = {
+    "jsonrpc": "2.0",
+    "method": "call",
+    "params": {
+        "model": "x_ap_dashboard",
+        "method": "write",
+        "args": [[1], {"x_studio_float_field_44o_1j0pl01m9": total_balance_due}],
+        "kwargs": {}
+    },
+    "id": 1
+}
+write_response = requests.post(write_url, headers=headers, json=write_payload)
+write_response.raise_for_status()
 
-    # Find the first record (or create one if needed)
-    records = models.execute_kw(odoo_db, uid, odoo_pass, model_name, 'search', [[]])
-    
-    if records:
-        # Update existing
-        models.execute_kw(odoo_db, uid, odoo_pass, model_name, 'write', [[records[0]], {field_name: total_ap}])
-    else:
-        # Create new
-        models.execute_kw(odoo_db, uid, odoo_pass, model_name, 'create', [{field_name: total_ap}])
-    
-    print("✅ Odoo updated successfully.")
-except Exception as e:
-    print(f"❌ Error updating Odoo: {e}")
+print(f"✅ Updated Odoo field with total AP balance: {total_balance_due}")
