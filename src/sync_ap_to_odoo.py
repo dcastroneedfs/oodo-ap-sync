@@ -3,7 +3,13 @@ import json
 import os
 import time
 
-# Odoo credentials stored as environment variables in Render
+import os
+import requests
+
+# Debug
+print("🔍 Loaded env keys:", list(os.environ.keys()))
+
+# Environment variables
 odoo_url = os.environ['ODOO_URL']
 odoo_db = os.environ['ODOO_DB']
 odoo_user = os.environ['ODOO_USER']
