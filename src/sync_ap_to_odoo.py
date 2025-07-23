@@ -1,73 +1,107 @@
 import os
+import psycopg2
 import requests
-from dotenv import load_dotenv
+from decimal import Decimal
 
-# Load env vars
-load_dotenv()
+# Load environment variables
+odoo_url = os.environ["ODOO_URL"]
+odoo_user = os.environ["ODOO_USER"]
+odoo_pass = os.environ["ODOO_PASS"]
+odoo_db = os.environ["ODOO_DB"]
+database_url = os.environ["DATABASE_URL"]
 
-ODOO_URL = os.getenv("ODOO_URL")
-ODOO_DB = os.getenv("ODOO_DB")
-ODOO_LOGIN = os.getenv("ODOO_LOGIN")
-ODOO_API_KEY = os.getenv("ODOO_API_KEY")
+print("📡 Fetching total invoice amount from Neon DB...")
 
-# Optional - replace this with your logic to fetch data (e.g., from Neon)
-def fetch_total_invoice_amount():
-    # For example purposes
-    return 28583.26
+try:
+    conn = psycopg2.connect(database_url)
+    cur = conn.cursor()
+    cur.execute("SELECT SUM(invoice_amount) FROM invoices")
+    result = cur.fetchone()
+    total_amount = result[0] or Decimal("0.0")
+    print(f"💰 Total Invoice Amount: ${total_amount:,.2f}")
+except Exception as e:
+    print(f"❌ Failed to fetch invoice total: {e}")
+    exit()
 
-# Sync AP value to Odoo
-def update_odoo_field(value):
-    login_url = f"{ODOO_URL}/web/session/authenticate"
-    headers = {'Content-Type': 'application/json'}
-    auth_payload = {
+print("🔐 Logging into Odoo...")
+
+try:
+    # Authenticate to get the user ID
+    login_payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
         "params": {
-            "db": ODOO_DB,
-            "login": ODOO_LOGIN,
-            "password": ODOO_API_KEY
-        }
+            "db": odoo_db,
+            "login": odoo_user,
+            "password": odoo_pass
+        },
+        "id": 1
     }
 
-    print("🔐 Authenticating with Odoo using API Key...")
-    response = requests.post(login_url, json=auth_payload, headers=headers)
+    login_response = requests.post(f"{odoo_url}/web/session/authenticate", json=login_payload)
+    login_json = login_response.json()
+    
+    uid = login_json["result"]["uid"]
+    if not uid:
+        print("❌ Failed to log in to Odoo (UID not found).")
+        exit()
 
-    if response.status_code != 200:
-        print(f"❌ Failed to authenticate: {response.status_code} - {response.text}")
-        return
+    print("✅ Logged into Odoo, updating field...")
 
-    result = response.json().get("result")
-    if not result or not result.get("session_id"):
-        print("❌ Authentication failed: No session_id returned")
-        return
+    # Search for record(s) in your custom model
+    search_payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [
+                odoo_db,
+                uid,
+                odoo_pass,
+                "x_ap_dashboard",
+                "search",
+                [[]]  # match all records
+            ]
+        },
+        "id": 2
+    }
 
-    session_id = result["session_id"]
-    uid = result["uid"]
+    search_response = requests.post(f"{odoo_url}/jsonrpc", json=search_payload)
+    record_ids = search_response.json().get("result", [])
 
-    # Now update the field
-    update_url = f"{ODOO_URL}/web/dataset/call_kw/x_ap_dashboard/write"
+    if not record_ids:
+        print("⚠️ No records found in x_ap_dashboard.")
+        exit()
+
+    # Convert to float for serialization
+    float_amount = float(total_amount)
+
+    # Update the field
     update_payload = {
-        "args": [[1], {  # assumes record ID 1
-            "x_studio_float_field_44o_1j0pl01m9": value
-        }],
-        "kwargs": {},
-        "model": "x_ap_dashboard",
-        "method": "write"
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [
+                odoo_db,
+                uid,
+                odoo_pass,
+                "x_ap_dashboard",
+                "write",
+                [record_ids, {
+                    "x_studio_float_field_44o_1j0pl01m9": float_amount
+                }]
+            ]
+        },
+        "id": 3
     }
 
-    update_headers = {
-        "Content-Type": "application/json",
-        "Cookie": f"session_id={session_id}"
-    }
-
-    print("📡 Updating AP total in Odoo...")
-    update_response = requests.post(update_url, json=update_payload, headers=update_headers)
-
-    if update_response.status_code == 200:
-        print("✅ Successfully updated Odoo field.")
+    update_response = requests.post(f"{odoo_url}/jsonrpc", json=update_payload)
+    if update_response.json().get("result", False):
+        print("✅ Odoo field updated successfully!")
     else:
-        print(f"❌ Failed to update Odoo: {update_response.status_code} - {update_response.text}")
-
-if __name__ == "__main__":
-    print("📡 Fetching total invoice amount from Neon DB...")
-    total = fetch_total_invoice_amount()
-    print(f"💰 Total Invoice Amount: ${total:,.2f}")
-    update_odoo_field(total)
+        print(f"❌ Failed to update Odoo: {update_response.json()}")
+except Exception as e:
+    print(f"❌ Error updating Odoo: {e}")
